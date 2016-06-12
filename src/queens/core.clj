@@ -30,16 +30,21 @@
         [[0 -1] [-1 0] [0  1] [ 1  0]
          [1  1] [-1 1] [1 -1] [-1 -1]])) position))
 
-(def invalid (s/stream 10))
+(defn make-invalid-map
+  [n]
+  (reduce
+    (fn [im p] (assoc-in im p (generate-all-invalid n p)))
+    {}
+    (all-positions n)))
 
 (defn process-working
-  [n valid working [queens available]]
+  [n invalid-map valid working [queens available]]
   (if (= (count queens) n)
     @(s/put! valid queens)
     (when (not (empty? available))
       (doseq [i available]
         (let [remaining (not-empty (clojure.set/difference
-                                     available (generate-all-invalid n i)))]
+                                     available (get-in invalid-map i)))]
           (when (or (not (nil? remaining))
                     (= (+ (count queens) 1) n))
             @(s/put! working [(conj queens i) remaining])))))) true)
@@ -55,23 +60,24 @@
         (cons next-level r)))))
 
 (defn next-solver-item
-  [n levels valid]
+  [n invalid-map levels valid]
   (some
     (fn [[current-level next-level]]
       (when-let [i @(s/try-take! current-level nil 0 nil)]
-        (process-working n valid next-level i)))
+        (process-working n invalid-map valid next-level i)))
     (reverse (level-pairs levels))))
 
 (defn start-solver!
-  [n levels valid]
+  [n invalid-map levels valid]
   (d/loop []
     (d/chain
-      (d/future (next-solver-item n levels valid))
+      (d/future (next-solver-item n invalid-map levels valid))
       (fn [_] (d/recur)))))
 
 (defn find-valid-positions
   [n]
-  (let [levels (take n (repeatedly #(s/stream 1e4))) 
+  (let [invalid-map (make-invalid-map n)
+        levels (take n (repeatedly #(s/stream 1e4))) 
         ap (all-positions n)
         valid (s/stream 1e7)
         results (atom #{})]
@@ -79,9 +85,9 @@
     (doseq [i ap]
       (s/put! (first levels)
               [(list i) (clojure.set/difference
-                          ap (generate-all-invalid n i))]))
+                          ap (get-in invalid-map i))]))
     {:valid valid :levels levels
-     :solvers (take 12 (repeatedly #(start-solver! n levels valid)))
+     :solvers (take 12 (repeatedly #(start-solver! n invalid-map levels valid)))
      :result results}))
 
 (comment
