@@ -49,29 +49,34 @@
             @(s/put! working [(conj queens i) remaining])))))) true)
 
 (defn keep-non-duplicates
-  [tracker incoming next-level]
+  [n tracker incoming next-level]
   (s/connect
     (s/map
-      #(do (swap! tracker conj (first %)) %)
+      #(do (swap! tracker update-in (first %)
+                  (fn [i] (if (nil? i) {} i)))
+           (second %))
       (s/filter
-        #(not (contains? @tracker (first %)))
-        incoming))
+        ;;; If there is no value at that position in the map, we can continue.
+        #(nil? (get-in @tracker (first %)))
+        (s/map
+          ;;; Sort the queens set and put that at the beginning of the list.
+          #(list (sort (first %)) %)
+          incoming)))
     next-level))
 
 (defn level-pairs
-  [levels]
+  [n levels tracker]
   (loop [result []
          [current-level next-level & r] levels]
     (if (not current-level)
       result
-      (let [incoming (s/stream) tracker (atom #{})]
+      (let [incoming (s/stream 50)]
         (if (not (nil? next-level))
-          (keep-non-duplicates tracker incoming next-level)
+          (keep-non-duplicates n tracker incoming next-level)
           (s/on-drained current-level #(s/close! incoming)))
         (recur
           (conj result (list current-level
-                             (when (not (nil? next-level)) incoming)
-                             tracker))
+                             (when (not (nil? next-level)) incoming)))
           (cons next-level r))))))
 
 (defn next-solver-item
@@ -93,9 +98,10 @@
           (d/recur))))))
 
 (defn find-valid-positions
-  [n]
+  [n solvers]
   (let [invalid-map (make-invalid-map n)
-        levels (reverse (level-pairs (take n (repeatedly #(s/stream 1e4))))) 
+        tracker (atom {})
+        levels (reverse (level-pairs n (take n (repeatedly #(s/stream 1e4))) tracker)) 
         initial-level (first (last levels))
         ap (all-positions n)
         valid (s/stream 1e7)
@@ -106,9 +112,12 @@
                [#{i} (clojure.set/difference
                        ap (get-in invalid-map i))]))
     (s/close! initial-level)
-    {:valid valid :levels levels
-     :solvers (take 8 (repeatedly #(start-solver! n invalid-map levels valid)))
-     :result results}))
+
+    (let [solvers (doall (take solvers (repeatedly #(start-solver! n invalid-map levels valid))))]
+      {:valid valid :levels levels
+     :solvers solvers 
+     :result results :tracker tracker
+     :complete? (apply d/zip solvers)})))
 
 (comment
 
@@ -121,7 +130,8 @@
   (def i (find-valid-positions 9))
 
   (clojure.pprint/pprint
-    (update-in i [:levels] #(map butlast %)))
+    (dissoc i :tracker)
+    )
 
   (map
     #(count @%)
@@ -131,16 +141,13 @@
 
 (defn -main
   "I don't do a whole lot ... yet."
-  [& args]
+  [& [n solvers]]
   (println "Starting queens.")
-  (let [n 8 solvers 8]
-    (println "Executing with:")
-    (println (str " - Board size: " n))
-    (println (str " - Solver count: " solvers))
-    (println (str "Start: " (java.util.Date.)))
-    ;;; Run code here and block on its completion.
-    (println (str "End: " (java.util.Date.)))
-    ;;; Take the difference and output it.
-    ;;; Should we write out the results somewhere?
-    ))
+  (println "Executing with:")
+  (println (str " - Board size: " n))
+  (println (str " - Solver count: " solvers))
+  (let [start-time (java.util.Date.)]
+    (println (str "Start: " start-time))
+    (time @(:complete? (find-valid-positions (Integer. n) (Integer. solvers))))
+    (println (str "End: " (java.util.Date.)))))
 
