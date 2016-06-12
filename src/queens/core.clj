@@ -34,8 +34,7 @@
   [n]
   (reduce
     (fn [im p] (assoc-in im p (generate-all-invalid n p)))
-    {}
-    (all-positions n)))
+    {} (all-positions n)))
 
 (defn process-working
   [n invalid-map valid working [queens available]]
@@ -49,15 +48,31 @@
                     (= (+ (count queens) 1) n))
             @(s/put! working [(conj queens i) remaining])))))) true)
 
+(defn keep-non-duplicates
+  [tracker incoming next-level]
+  (s/connect
+    (s/map
+      #(do (swap! tracker conj (first %)) %)
+      (s/filter
+        #(not (contains? @tracker (first %)))
+        incoming))
+    next-level))
+
 (defn level-pairs
   [levels]
   (loop [result []
          [current-level next-level & r] levels]
     (if (not current-level)
       result
-      (recur
-        (conj result (list current-level next-level))
-        (cons next-level r)))))
+      (let [incoming (s/stream) tracker (atom #{})]
+        (if (not (nil? next-level))
+          (keep-non-duplicates tracker incoming next-level)
+          (s/on-drained current-level #(s/close! incoming)))
+        (recur
+          (conj result (list current-level
+                             (when (not (nil? next-level)) incoming)
+                             tracker))
+          (cons next-level r))))))
 
 (defn next-solver-item
   [n invalid-map levels valid]
@@ -65,29 +80,34 @@
     (fn [[current-level next-level]]
       (when-let [i @(s/try-take! current-level nil 0 nil)]
         (process-working n invalid-map valid next-level i)))
-    (reverse (level-pairs levels))))
+    levels))
 
 (defn start-solver!
   [n invalid-map levels valid]
   (d/loop []
     (d/chain
       (d/future (next-solver-item n invalid-map levels valid))
-      (fn [_] (d/recur)))))
+      (fn [rval]
+        (if (not rval)
+          :completed
+          (d/recur))))))
 
 (defn find-valid-positions
   [n]
   (let [invalid-map (make-invalid-map n)
-        levels (take n (repeatedly #(s/stream 1e4))) 
+        levels (reverse (level-pairs (take n (repeatedly #(s/stream 1e4))))) 
+        initial-level (first (last levels))
         ap (all-positions n)
         valid (s/stream 1e7)
         results (atom #{})]
     (s/consume #(swap! results conj (set %)) valid)
     (doseq [i ap]
-      (s/put! (first levels)
-              [(list i) (clojure.set/difference
-                          ap (get-in invalid-map i))]))
+      @(s/put! initial-level
+               [#{i} (clojure.set/difference
+                       ap (get-in invalid-map i))]))
+    (s/close! initial-level)
     {:valid valid :levels levels
-     :solvers (take 12 (repeatedly #(start-solver! n invalid-map levels valid)))
+     :solvers (take 8 (repeatedly #(start-solver! n invalid-map levels valid)))
      :result results}))
 
 (comment
@@ -98,12 +118,29 @@
   (def f2 (generate-all-invalid 8 (first f1)))
   (def r2 (clojure.set/difference r f2))
 
-  (def i (find-valid-positions 8))
+  (def i (find-valid-positions 9))
+
+  (clojure.pprint/pprint
+    (update-in i [:levels] #(map butlast %)))
+
+  (map
+    #(count @%)
+    (reverse (map last (:levels i))))
 
   )
 
 (defn -main
   "I don't do a whole lot ... yet."
   [& args]
-  (println "Hello, World!"))
+  (println "Starting queens.")
+  (let [n 8 solvers 8]
+    (println "Executing with:")
+    (println (str " - Board size: " n))
+    (println (str " - Solver count: " solvers))
+    (println (str "Start: " (java.util.Date.)))
+    ;;; Run code here and block on its completion.
+    (println (str "End: " (java.util.Date.)))
+    ;;; Take the difference and output it.
+    ;;; Should we write out the results somewhere?
+    ))
 
